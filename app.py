@@ -1,6 +1,10 @@
+import sys
 import eventlet
 eventlet.monkey_patch()
-eventlet.hubs.use_hub("select")
+
+# Aplica a correção do hub 'select' apenas se NÃO estiver no Windows
+if sys.platform != "win32":
+    eventlet.hubs.use_hub("select")
 
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
