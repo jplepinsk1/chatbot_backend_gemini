@@ -1,0 +1,7 @@
+flask
+flask-cors
+flask-socketio
+threading
+eventlet
+google-genai
+python-dotenv
