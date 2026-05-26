@@ -1,48 +1,37 @@
-import asyncio
+import eventlet
+eventlet.monkey_patch()
+eventlet.hubs.use_hub("select")
+
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
 from google import genai
 from google.genai import types
+from threading import Timer
 import config
 
 app = Flask(__name__)
 app.secret_key = config.SECRET_KEY
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Trocamos o Eventlet pelo modo nativo 'asyncio' do Flask-SocketIO
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='asyncio')
-
-# Inicializa o cliente da API
 client = genai.Client(api_key=config.GEMINI_API_KEY)
 
-# DICIONÁRIOS GLOBAIS: Estruturas de dados limpas em memória
 active_chats = {}
-inactivity_tasks = {}  # Agora armazena tarefas assíncronas em vez de Threads nativas
+inactivity_timers = {}
 
-# ==============================================================================
-# FUNÇÕES DE SUPORTE (Regras de Negócio Assíncronas)
-# ==============================================================================
-
-async def encerrar_por_inatividade(sid):
-    """Aguarda o tempo limite de forma não-bloqueante. Se o tempo esgotar, desliga o usuário."""
+def encerrar_por_inatividade(sid):
+    print(f"[TIMEOUT] Sessão {sid} encerrada por inatividade.")
     try:
-        await asyncio.sleep(config.TIMEOUT_INATIVIDADE)
-        print(f"[TIMEOUT] Sessão {sid} encerrada por inatividade.")
-        
-        # Envia aviso e desconecta o canal WebSocket de forma segura
         socketio.emit('erro', {'erro': 'Sessão encerrada por inatividade.'}, room=sid)
         socketio.disconnect(sid)
-    except asyncio.CancelledError:
-        # A tarefa foi cancelada porque o usuário mandou mensagem a tempo
-        pass
+    except Exception as e:
+        print(f"Erro ao desconectar {sid}: {e}")
 
 def resetar_timer_usuario(sid):
-    """Cancela a espera antiga e agenda um novo ciclo de contagem assíncrona."""
-    if sid in inactivity_tasks:
-        inactivity_tasks[sid].cancel()
-    
-    # Cria uma tarefa em segundo plano que não pesa no servidor
-    inactivity_tasks[sid] = asyncio.create_task(encerrar_por_inatividade(sid))
-
+    if sid in inactivity_timers:
+        inactivity_timers[sid].cancel()
+    novo_timer = Timer(config.TIMEOUT_INATIVIDADE, encerrar_por_inatividade, args=[sid])
+    inactivity_timers[sid] = novo_timer
+    novo_timer.start()
 
 def obter_ou_criar_chat(sid):
     if sid not in active_chats:
@@ -53,73 +42,46 @@ def obter_ou_criar_chat(sid):
         )
     return active_chats[sid]
 
-
 def limpar_dados_usuario(sid):
     if sid in active_chats:
         del active_chats[sid]
-    if sid in inactivity_tasks:
-        inactivity_tasks[sid].cancel()
-        del inactivity_tasks[sid]
-    print(f"[MEMÓRIA] Recursos liberados para o ID: {sid}")
-
-# ==============================================================================
-# EVENTOS DO SOCKET.IO (Camada de Transporte)
-# ==============================================================================
+    if sid in inactivity_timers:
+        inactivity_timers[sid].cancel()
+        del inactivity_timers[sid]
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "message": "Servidor WebSocket Nativo Ativo"}), 200
-
+    return jsonify({"status": "running"}), 200
 
 @socketio.on('connect')
 def handle_connect():
     user_sid = request.sid
-    print(f"[CONEXÃO] Cliente conectado: {user_sid}")
     try:
         obter_ou_criar_chat(user_sid)
         resetar_timer_usuario(user_sid)
-        
-        emit('status_conexao', {
-            'data': 'Conectado com sucesso!', 
-            'session_id': user_sid
-        })
+        emit('status_conexao', {'session_id': user_sid})
     except Exception as e:
-        app.logger.error(f"Erro no connect para {user_sid}: {e}", exc_info=True)
-        emit('erro', {'erro': 'Falha ao inicializar o chat no servidor.'})
-
+        emit('erro', {'erro': 'Falha ao inicializar.'})
 
 @socketio.on('enviar_mensagem')
 def handle_enviar_mensagem(data):
     user_sid = request.sid
-    mensagem_usuario = data.get("mensagem")
-
-    if not mensagem_usuario:
-        emit('erro', {"erro": "Mensagem não pode ser vazia."})
-        return
+    mensagem = data.get("mensagem")
+    if not mensagem: return
 
     try:
         resetar_timer_usuario(user_sid)
         user_chat = obter_ou_criar_chat(user_sid)
-        
-        # O stream consome os dados nativamente sem travar o loop do asyncio
-        response_stream = user_chat.send_message_stream(mensagem_usuario)
+        response_stream = user_chat.send_message_stream(mensagem)
         for chunk in response_stream:
             emit('resposta_bot', {"texto": chunk.text})
-            
         emit('resposta_bot_fim')
-
     except Exception as e:
-        app.logger.error(f"Erro em enviar_mensagem para {user_sid}: {e}", exc_info=True)
-        emit('erro', {"erro": "Ocorreu um erro ao processar sua mensagem."})
-
+        emit('erro', {"erro": f"Erro: {str(e)}"})
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    user_sid = request.sid
-    print(f"[DESCONEXÃO] Cliente desconectado: {user_sid}")
-    limpar_dados_usuario(user_sid)
-
+    limpar_dados_usuario(request.sid)
 
 if __name__ == "__main__":
-    # Roda o app usando o motor assíncrono padrão
     socketio.run(app, debug=True)
