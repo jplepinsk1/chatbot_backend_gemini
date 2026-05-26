@@ -9,7 +9,7 @@ TIMEOUT_INATIVIDADE = 600  # 10 minutos em segundos
 
 # Configurações do Gemini AI
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-MODEL_NAME = "gemini-3.5-flash"
+MODEL_NAME = "gemini-3.1-flash-lite"
 
 SYSTEM_INSTRUCTION = """
 Você é um assistente virtual amigável e prestativo. Sua função é responder a perguntas dos usuários e fornecer informações úteis.
