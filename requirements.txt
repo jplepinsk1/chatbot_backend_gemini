@@ -1,6 +1,7 @@
 flask
 flask-cors
 flask-socketio
+eventlet
 google-genai
 python-dotenv
 gunicorn
